@@ -22,7 +22,7 @@ public class WebController {
     @Autowired("modify")
     private ModifyService modifyService;
 
-    @RequestMapping("/search")
+    @RequestMapping("/search/.*")
     public void search(@RequestParam("name") String name, HttpServletRequest request, HttpServletResponse response) {
         out(response, queryService.search(name));
     }

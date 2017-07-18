@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Created by wz on 2017-07-17.
@@ -29,7 +30,8 @@ public class DispatcherServlet extends HttpServlet {
     //保存beanName和实例的映射
     private Map<String, Object> beanMapping = new HashMap<>();
     //保存URL和方法的映射
-    private Map<String, HandlerModel> handlerMapping = new HashMap<>();
+    //private Map<Pattern, HandlerModel> handlerMapping = new HashMap<>();
+    private List<HandlerModel> handlerMapping = new ArrayList<>();
 
     @Override
     public void init(ServletConfig config) throws ServletException {
@@ -165,7 +167,7 @@ public class DispatcherServlet extends HttpServlet {
                     continue;
                 }
                 RequestMapping methodMapping = method.getAnnotation(RequestMapping.class);
-                String realUrl = (url + "/" + methodMapping.value().trim()).replaceAll("/+", "/");
+                String regex = (url + "/" + methodMapping.value().trim()).replaceAll("/+", "/").replaceAll("\\*", ".*");
                 //获取参数上的注解
                 Annotation[][] annotations = method.getParameterAnnotations();
                 Map<String, Integer> paranMap = new HashMap<>();
@@ -196,8 +198,7 @@ public class DispatcherServlet extends HttpServlet {
                         }
                     }
                 }
-                HandlerModel model = new HandlerModel(method, entry.getValue(), paranMap);
-                handlerMapping.put(realUrl, model);
+                handlerMapping.add(new HandlerModel(Pattern.compile(regex), method, entry.getValue(), paranMap));
             }
         }
     }
@@ -241,33 +242,32 @@ public class DispatcherServlet extends HttpServlet {
         //用户写了多个"///"，只保留一个
         requestUri = requestUri.replace(contextPath, "").replaceAll("/+", "/");
         //遍历HandlerMapping，寻找url匹配的
-        for (Map.Entry<String, HandlerModel> entry : handlerMapping.entrySet()) {
-            if (entry.getKey().equals(requestUri)) {
-                //取出对应的HandlerModel
-                HandlerModel handlerModel = entry.getValue();
-                Map<String, Integer> paramIndexMap = handlerModel.paramMap;
-                //定义一个数组来保存应该给method的所有参数赋值的数组
-                Object[] paramValues = new Object[paramIndexMap.size()];
-                Class<?>[] types = handlerModel.method.getParameterTypes();
-                //遍历一个方法的所有参数[name->0,addr->1,HttpServletRequest->2]
-                for (Map.Entry<String, Integer> param : paramIndexMap.entrySet()) {
-                    String key = param.getKey();
-                    if (key.equals(HttpServletRequest.class.getName())) {
-                        paramValues[param.getValue()] = req;
-                    } else if (key.equals(HttpServletResponse.class.getName())) {
-                        paramValues[param.getValue()] = resp;
-                    } else {
-                        //如果用户传了参数，譬如 name= "wolf"，做一下参数类型转换，将用户传来的值转为方法中参数的类型
-                        String parameter = req.getParameter(key);
-                        if (parameter != null) {
-                            paramValues[param.getValue()] = convert(parameter.trim(), types[param.getValue()]);
-                        }
+        for (HandlerModel handler : handlerMapping) {
+            if (!handler.pattern.matcher(requestUri).matches()) {
+                continue;
+            }
+            Map<String, Integer> paramIndexMap = handler.paramMap;
+            //定义一个数组来保存应该给method的所有参数赋值的数组
+            Object[] paramValues = new Object[paramIndexMap.size()];
+            Class<?>[] types = handler.method.getParameterTypes();
+            //遍历一个方法的所有参数[name->0,addr->1,HttpServletRequest->2]
+            for (Map.Entry<String, Integer> param : paramIndexMap.entrySet()) {
+                String key = param.getKey();
+                if (key.equals(HttpServletRequest.class.getName())) {
+                    paramValues[param.getValue()] = req;
+                } else if (key.equals(HttpServletResponse.class.getName())) {
+                    paramValues[param.getValue()] = resp;
+                } else {
+                    //如果用户传了参数，譬如 name= "wolf"，做一下参数类型转换，将用户传来的值转为方法中参数的类型
+                    String parameter = req.getParameter(key);
+                    if (parameter != null) {
+                        paramValues[param.getValue()] = convert(parameter.trim(), types[param.getValue()]);
                     }
                 }
-                //激活该方法
-                handlerModel.method.invoke(handlerModel.controller, paramValues);
-                return true;
             }
+            //激活该方法
+            handler.method.invoke(handler.controller, paramValues);
+            return true;
         }
         return false;
     }
@@ -320,11 +320,13 @@ public class DispatcherServlet extends HttpServlet {
     }
 
     private class HandlerModel{
-        Method method;
-        Object controller;
-        Map<String, Integer> paramMap;
+        private Pattern pattern;
+        private Method method;
+        private Object controller;
+        private Map<String, Integer> paramMap;
 
-        public HandlerModel(Method method, Object controller, Map<String, Integer> paramMap) {
+        public HandlerModel(Pattern pattern, Method method, Object controller, Map<String, Integer> paramMap) {
+            this.pattern = pattern;
             this.method = method;
             this.controller = controller;
             this.paramMap = paramMap;
